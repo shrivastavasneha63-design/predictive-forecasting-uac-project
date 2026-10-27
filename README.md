@@ -1,23 +1,93 @@
-# predictive-forecasting-uac-project
 Predictive Forecasting of Care Load & Placement Demand
 
-A Time-Series Forecasting Approach for the HHS Unaccompanied Children Program
+HHS Unaccompanied Children (UAC) Program
 
-Project Report / Research Paper
+📌 Project Overview
 
-Dataset: HHS Unaccompanied Alien Children Program
+This project develops a predictive forecasting framework to estimate future care load and placement demand within the HHS Unaccompanied Children (UAC) Program.
 
-Prepared by: Dr. Sneha
+The project uses historical program data to identify trends in:
 
-Project Focus:
-Predictive forecasting of children in HHS care and discharge demand using time-series analysis and machine-learning–based analytical techniques.
+- Children in HHS Care
+- Children discharged from HHS Care
+- Care-load patterns
+- Discharge and placement demand
 
-Abstract
+Time-series forecasting techniques are used to generate short-term forecasts that can support capacity planning, resource allocation, staffing decisions, and operational preparedness.
 
-The HHS Unaccompanied Children (UAC) Program manages the care and placement of unaccompanied children referred to the U.S. Department of Health and Human Services. Accurate forecasting of care load and discharge demand can support operational planning, resource allocation, staffing, and placement capacity management.
+🎯 Objectives
 
-This project develops a predictive forecasting framework using historical UAC program data. The analysis examines trends in children in HHS care and children discharged from HHS care, prepares the data for time-series modelling, compares forecasting approaches, and generates short-term forecasts. Model performance is evaluated using Mean Absolute Error (MAE), Root Mean Squared Error (RMSE), and Mean Absolute Percentage Error (MAPE).
+1. Analyze historical UAC care and discharge trends.
+2. Prepare and clean the dataset for time-series analysis.
+3. Develop short-term forecasting models.
+4. Compare forecasting model performance.
+5. Evaluate models using MAE, RMSE, and MAPE.
+6. Generate 30-day forecasts for care load and discharge demand.
+7. Present the results through an interactive Streamlit dashboard.
 
-The project also provides an interactive Streamlit dashboard that allows users to explore historical trends, compare forecasting models, visualize future demand, and interpret potential operational implications.
+🛠️ Technologies Used
 
-Keywords: HHS Unaccompanied Children, UAC Program, Time-Series Forecasting, Care Load, Placement Demand, Discharge Demand, Predictive Analytics, Streamlit
+- Python
+- Pandas
+- NumPy
+- Matplotlib
+- Scikit-learn
+- Streamlit
+- Time-Series Forecasting
+
+📊 Forecasting Models
+
+The project compares multiple forecasting approaches:
+
+- Naive Forecast
+- 7-Day Moving Average
+- Exponential Smoothing
+
+Model performance is evaluated using:
+
+MAE — Mean Absolute Error
+RMSE — Root Mean Squared Error
+MAPE — Mean Absolute Percentage Error
+
+📈 Dashboard
+
+The Streamlit application provides:
+
+- Historical care-load visualization
+- Historical discharge-demand visualization
+- Forecasting model comparison
+- 7–30 day forecasting
+- Forecast tables
+- Approximate uncertainty bands
+- Operational demand insights
+
+📁 Project Structure
+
+predictive-forecasting-uac-project/
+│
+├── app.py
+├── HHS_Unaccompanied_Alien_Children_Program_cleaned.csv
+├── requirements.txt
+├── README.md
+├── forecast_30_day_care.csv
+├── forecast_30_day_discharge.csv
+└── model_comparison.csv
+
+▶️ How to Run
+
+Install the required Python packages:
+
+pip install -r requirements.txt
+
+Run the Streamlit application:
+
+streamlit run app.py
+
+📌 Expected Outcome
+
+The project provides a data-driven approach for anticipating changes in UAC care load and discharge demand. The resulting forecasts can help demonstrate how predictive analytics may support proactive operational and placement-capacity planning.
+
+---
+
+Project: Predictive Forecasting of Care Load & Placement Demand
+Program: HHS Unaccompanied Children (UAC) Program
