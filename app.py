@@ -2,282 +2,219 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-from sklearn.metrics import mean_absolute_error, mean_squared_error
+from pathlib import Path
+import re
 
-st.set_page_config(
-    page_title="UAC Predictive Forecasting Dashboard",
-    page_icon="📊",
-    layout="wide"
-)
-
+st.set_page_config(page_title="UAC Predictive Forecasting Dashboard", page_icon="📊", layout="wide")
 st.title("Predictive Forecasting of Care Load & Placement Demand")
 st.subheader("HHS Unaccompanied Children (UAC) Program")
+st.write("Analyze historical UAC care and discharge data, compare forecasting methods, and explore short-term forecasts for capacity planning.")
 
-st.write(
-    "Analyze historical care and discharge data, compare forecasting "
-    "models, and explore short-term demand forecasts."
-)
+BASE_DIR = Path(__file__).resolve().parent
 
-CSV_FILE = "HHS_Unaccompanied_Alien_Children_Program_cleaned.csv"
+def normalize(text):
+    return re.sub(r"[^a-z0-9]", "", str(text).lower())
+
+def find_column(columns, candidates):
+    lookup = {normalize(c): c for c in columns}
+    for candidate in candidates:
+        key = normalize(candidate)
+        if key in lookup:
+            return lookup[key]
+    for candidate in candidates:
+        key = normalize(candidate)
+        for normalized, original in lookup.items():
+            if key and (key in normalized or normalized in key):
+                return original
+    return None
+
+def find_csv():
+    # Accept either the original filename or the cleaned filename.
+    names = [
+        "HHS_Unaccompanied_Alien_Children_Program.csv",
+        "HHS_Unaccompanied_Alien_Children_Program_cleaned.csv",
+    ]
+    for name in names:
+        path = BASE_DIR / name
+        if path.exists():
+            return path
+    files = list(BASE_DIR.glob("*.csv"))
+    if len(files) == 1:
+        return files[0]
+    matches = [p for p in files if "unaccompanied" in p.name.lower()]
+    return matches[0] if len(matches) == 1 else None
+
+@st.cache_data
+def load_data(path, modified):
+    data = pd.read_csv(path)
+    date_col = find_column(data.columns, ["Date", "Reporting Date", "Report Date"])
+    if date_col is None:
+        raise ValueError("Could not find a Date column. Detected columns: " + ", ".join(map(str, data.columns)))
+    rename = {date_col: "Date"}
+    aliases = {
+        "Children apprehended and placed in CBP custody": [
+            "Children apprehended and placed in CBP custody",
+            "Children apprehended and placed in CBP custody*"
+        ],
+        "Children in CBP custody": ["Children in CBP custody"],
+        "Children transferred out of CBP custody": ["Children transferred out of CBP custody"],
+        "Children in HHS Care": ["Children in HHS Care", "Children in HHS care"],
+        "Children discharged from HHS Care": [
+            "Children discharged from HHS Care",
+            "Children discharged from HHS care"
+        ],
+    }
+    for standard, options in aliases.items():
+        actual = find_column(data.columns, options)
+        if actual is not None:
+            rename[actual] = standard
+    data = data.rename(columns=rename)
+    data["Date"] = pd.to_datetime(data["Date"], errors="coerce")
+    data = data.dropna(subset=["Date"])
+    numeric_cols = [c for c in aliases if c in data.columns]
+    for col in numeric_cols:
+        data[col] = pd.to_numeric(data[col].astype(str).str.replace(",", "", regex=False), errors="coerce")
+    if not numeric_cols:
+        raise ValueError("No expected numeric data columns were found. Check the CSV headings.")
+    data = data.sort_values("Date").groupby("Date", as_index=False).last()
+    return data.reset_index(drop=True)
+
+csv_file = find_csv()
+if csv_file is None:
+    st.error("CSV dataset not found.")
+    st.info("Upload HHS_Unaccompanied_Alien_Children_Program.csv into the same GitHub folder as app.py. The app also accepts the filename ending in _cleaned.csv.")
+    st.stop()
+
+try:
+    df = load_data(str(csv_file), csv_file.stat().st_mtime)
+except Exception as error:
+    st.error("The dataset could not be loaded. Check the CSV filename and column headings.")
+    st.exception(error)
+    st.stop()
+
+st.caption(f"Dataset loaded: {csv_file.name}")
 
 CARE = "Children in HHS Care"
 DISCHARGE = "Children discharged from HHS Care"
-
-@st.cache_data
-def load_data():
-    data = pd.read_csv(CSV_FILE)
-    data.columns = data.columns.str.strip()
-
-    required = ["Date", CARE, DISCHARGE]
-    missing = [column for column in required if column not in data.columns]
-
-    if missing:
-        raise ValueError(
-            "Missing required CSV columns: " + ", ".join(missing)
-        )
-
-    data["Date"] = pd.to_datetime(data["Date"], errors="coerce")
-
-    for column in data.columns:
-        if column != "Date":
-            data[column] = pd.to_numeric(
-                data[column].astype(str).str.replace(",", "", regex=False),
-                errors="coerce"
-            )
-
-    data = data.dropna(subset=["Date"])
-    data = data.sort_values("Date")
-    data = data.drop_duplicates(subset=["Date"], keep="last")
-    data = data.reset_index(drop=True)
-
-    return data
-
-
-try:
-    df = load_data()
-except Exception as error:
-    st.error("Unable to load the dataset.")
-    st.code(str(error))
-    st.info(
-        "Check that the CSV is uploaded to the same GitHub repository "
-        "as app.py and that its filename matches CSV_FILE."
-    )
+if CARE not in df.columns:
+    st.error("The column 'Children in HHS Care' was not found.")
+    st.write("Columns detected:", list(df.columns))
     st.stop()
 
-if df.empty:
-    st.error("The dataset contains no valid dated records.")
-    st.stop()
-
-if df[CARE].notna().sum() < 10 or df[DISCHARGE].notna().sum() < 10:
-    st.error("At least 10 valid observations are required for each KPI.")
-    st.stop()
-
-# Sidebar controls
 st.sidebar.header("Dashboard Controls")
+horizon = st.sidebar.slider("Forecast horizon (days)", 7, 30, 14)
+metrics = [CARE] + ([DISCHARGE] if DISCHARGE in df.columns else [])
+metric = st.sidebar.selectbox("Select metric to forecast", metrics)
+show_table = st.sidebar.checkbox("Show forecast table", True)
 
-horizon = st.sidebar.slider(
-    "Forecast horizon (days)",
-    min_value=7,
-    max_value=30,
-    value=30
-)
+latest_care = df[CARE].dropna().iloc[-1]
+latest_discharge = df[DISCHARGE].dropna().iloc[-1] if DISCHARGE in df.columns and df[DISCHARGE].notna().any() else None
 
-metric = st.sidebar.selectbox(
-    "Select KPI",
-    [CARE, DISCHARGE]
-)
+st.subheader("Key Performance Indicators")
+a, b, c, d = st.columns(4)
+a.metric("Latest HHS Care Load", f"{latest_care:,.0f}")
+b.metric("Latest Daily Discharges", f"{latest_discharge:,.0f}" if latest_discharge is not None else "N/A")
+c.metric("Total records", f"{len(df):,}")
+d.metric("Latest reporting date", df["Date"].max().strftime("%d %b %Y"))
 
-show_table = st.sidebar.checkbox("Show forecast table", value=True)
-
-model_choice = st.sidebar.selectbox(
-    "Forecast model",
-    ["7-Day Moving Average", "Naive", "Exponential Smoothing"]
-)
-
-# KPI summary
-care_values = df[CARE].dropna()
-discharge_values = df[DISCHARGE].dropna()
-
-k1, k2, k3, k4 = st.columns(4)
-
-k1.metric("Latest HHS Care Load", f"{care_values.iloc[-1]:,.0f}")
-k2.metric("Latest Daily Discharges", f"{discharge_values.iloc[-1]:,.0f}")
-k3.metric("Total Records", f"{len(df):,}")
-k4.metric("Latest Reporting Date", df["Date"].max().strftime("%d %b %Y"))
-
-st.divider()
-
-# Historical trends
-st.subheader("Historical Trends")
-
-fig, ax = plt.subplots(figsize=(12, 5))
-ax.plot(df["Date"], df[CARE], label="Children in HHS Care")
+st.subheader("Historical HHS Care Load")
+fig, ax = plt.subplots(figsize=(12, 4))
+ax.plot(df["Date"], df[CARE], label="Children in HHS Care", linewidth=2)
 ax.set_xlabel("Date")
-ax.set_ylabel("Number of Children")
-ax.set_title("Historical HHS Care Load")
+ax.set_ylabel("Number of children")
+ax.grid(alpha=0.25)
 ax.legend()
 fig.autofmt_xdate()
-fig.tight_layout()
 st.pyplot(fig)
 plt.close(fig)
 
-fig, ax = plt.subplots(figsize=(12, 5))
-ax.plot(df["Date"], df[DISCHARGE], label="Children Discharged")
-ax.set_xlabel("Date")
-ax.set_ylabel("Number of Children")
-ax.set_title("Historical Discharge Demand")
-ax.legend()
-fig.autofmt_xdate()
-fig.tight_layout()
-st.pyplot(fig)
-plt.close(fig)
+if DISCHARGE in df.columns:
+    st.subheader("Historical Discharge Demand")
+    fig, ax = plt.subplots(figsize=(12, 4))
+    ax.plot(df["Date"], df[DISCHARGE], label="Children discharged", linewidth=2)
+    ax.set_xlabel("Date")
+    ax.set_ylabel("Number of children")
+    ax.grid(alpha=0.25)
+    ax.legend()
+    fig.autofmt_xdate()
+    st.pyplot(fig)
+    plt.close(fig)
 
-# Forecast functions
 def naive_forecast(series, steps):
-    return np.repeat(float(series.iloc[-1]), steps)
-
+    values = series.dropna().astype(float)
+    return np.repeat(values.iloc[-1], steps)
 
 def moving_average_forecast(series, steps, window=7):
-    history = list(series.astype(float))
-    predictions = []
-
+    history = list(series.dropna().astype(float).values)
+    output = []
     for _ in range(steps):
-        prediction = float(np.mean(history[-window:]))
-        predictions.append(prediction)
+        prediction = float(np.mean(history[-min(window, len(history)):]))
+        output.append(prediction)
         history.append(prediction)
-
-    return np.array(predictions)
-
+    return np.array(output)
 
 def exponential_smoothing_forecast(series, steps, alpha=0.3):
-    values = series.astype(float).to_numpy()
-    level = values[0]
-
+    values = series.dropna().astype(float).values
+    level = float(values[0])
     for value in values[1:]:
-        level = alpha * value + (1 - alpha) * level
-
+        level = alpha * float(value) + (1 - alpha) * level
     return np.repeat(level, steps)
 
-
-def predict(series, model, steps):
-    if model == "Naive":
-        return naive_forecast(series, steps)
-
-    if model == "7-Day Moving Average":
-        return moving_average_forecast(series, steps, window=7)
-
-    return exponential_smoothing_forecast(series, steps, alpha=0.3)
-
-
-def evaluate_models(series):
-    series = series.dropna().reset_index(drop=True)
-
-    if len(series) < 10:
+def evaluate(series):
+    values = series.dropna().astype(float).reset_index(drop=True)
+    if len(values) < 10:
         return pd.DataFrame()
+    test_size = min(30, max(3, len(values) // 5))
+    train, test = values.iloc[:-test_size], values.iloc[-test_size:]
+    models = {
+        "Naive": naive_forecast(train, test_size),
+        "7-Day Moving Average": moving_average_forecast(train, test_size, 7),
+        "Exponential Smoothing": exponential_smoothing_forecast(train, test_size, 0.3),
+    }
+    rows = []
+    actual = test.to_numpy()
+    for name, prediction in models.items():
+        mae = np.mean(np.abs(actual - prediction))
+        rmse = np.sqrt(np.mean((actual - prediction) ** 2))
+        nonzero = np.abs(actual) > 0
+        mape = np.mean(np.abs((actual[nonzero] - prediction[nonzero]) / actual[nonzero])) * 100 if nonzero.any() else np.nan
+        rows.append({"Model": name, "MAE": mae, "RMSE": rmse, "MAPE (%)": mape})
+    return pd.DataFrame(rows).sort_values("MAE").reset_index(drop=True)
 
-    test_size = min(30, max(1, len(series) // 5))
-    train = series.iloc[:-test_size]
-    test = series.iloc[-test_size:]
-
-    results = []
-
-    for name in [
-        "Naive",
-        "7-Day Moving Average",
-        "Exponential Smoothing"
-    ]:
-        predictions = predict(train, name, test_size)
-
-        mae = mean_absolute_error(test, predictions)
-        rmse = np.sqrt(mean_squared_error(test, predictions))
-
-        actual = test.to_numpy(dtype=float)
-        denominator = np.abs(actual)
-        errors = np.divide(
-            np.abs(actual - predictions),
-            denominator,
-            out=np.full(len(actual), np.nan),
-            where=denominator != 0
-        )
-        mape = np.nanmean(errors) * 100 if np.any(denominator != 0) else np.nan
-
-        results.append({
-            "Model": name,
-            "MAE": round(mae, 2),
-            "RMSE": round(rmse, 2),
-            "MAPE (%)": round(mape, 2) if np.isfinite(mape) else np.nan
-        })
-
-    return pd.DataFrame(results)
-
-
-# Model comparison
 st.subheader("Forecasting Model Comparison")
-st.caption(
-    "Models are evaluated on a chronological holdout period. "
-    "Lower MAE and RMSE generally indicate better performance."
-)
+series = df[metric].dropna().astype(float).reset_index(drop=True)
+if len(series) < 10:
+    st.warning("At least 10 valid observations are required for model comparison.")
+    st.stop()
 
-comparison = evaluate_models(df[metric])
+results = evaluate(series)
+st.write("Models are evaluated on the most recent time-ordered holdout observations. Lower MAE and RMSE indicate smaller errors.")
+st.dataframe(results.style.format({"MAE": "{:,.2f}", "RMSE": "{:,.2f}", "MAPE (%)": "{:,.2f}"}), use_container_width=True, hide_index=True)
+best = results.iloc[0]["Model"]
+st.success(f"Best model on the holdout period based on MAE: {best}")
 
-if not comparison.empty:
-    st.dataframe(comparison, use_container_width=True, hide_index=True)
-
-    best_model = comparison.loc[comparison["MAE"].idxmin(), "Model"]
-    st.write(f"Lowest holdout MAE: **{best_model}**")
-else:
-    st.warning("Not enough valid observations to compare models.")
-
-# Future forecast
-st.divider()
-st.subheader(f"Future Forecast: {metric}")
-
-series_df = df[["Date", metric]].dropna().copy()
-series = series_df[metric].reset_index(drop=True)
-
-forecast_values = predict(series, model_choice, horizon)
-
-last_date = series_df["Date"].max()
-future_dates = pd.date_range(
-    start=last_date + pd.Timedelta(days=1),
-    periods=horizon,
-    freq="D"
-)
-
+model_functions = {
+    "Naive": naive_forecast,
+    "7-Day Moving Average": moving_average_forecast,
+    "Exponential Smoothing": exponential_smoothing_forecast,
+}
+forecast = model_functions[best](series, horizon)
+future_dates = pd.date_range(df["Date"].max() + pd.Timedelta(days=1), periods=horizon, freq="D")
 forecast_df = pd.DataFrame({
     "Date": future_dates,
-    "Forecast": np.maximum(forecast_values, 0).round(0).astype(int)
+    "Predicted value": np.maximum(forecast, 0).round(0).astype(int)
 })
 
-st.write(f"Selected model: **{model_choice}**")
-st.write(f"Forecast horizon: **{horizon} days**")
-
-fig, ax = plt.subplots(figsize=(12, 5))
-
-history_to_plot = series_df.tail(90)
-
-ax.plot(
-    history_to_plot["Date"],
-    history_to_plot[metric],
-    label="Historical values"
-)
-
-ax.plot(
-    forecast_df["Date"],
-    forecast_df["Forecast"],
-    linestyle="--",
-    marker="o",
-    markersize=3,
-    label="Forecast"
-)
-
-ax.axvline(last_date, linestyle=":", label="Forecast starts")
+st.subheader(f"{horizon}-Day Forecast: {metric}")
+fig, ax = plt.subplots(figsize=(12, 4))
+history = df[["Date", metric]].dropna().tail(90)
+ax.plot(history["Date"], history[metric], label="Historical values", linewidth=2)
+ax.plot(forecast_df["Date"], forecast_df["Predicted value"], label=f"Forecast ({best})", marker="o", linestyle="--")
 ax.set_xlabel("Date")
-ax.set_ylabel("Number of Children")
-ax.set_title(f"{metric}: Historical Data and Forecast")
+ax.set_ylabel("Number of children")
+ax.grid(alpha=0.25)
 ax.legend()
 fig.autofmt_xdate()
-fig.tight_layout()
 st.pyplot(fig)
 plt.close(fig)
 
@@ -285,27 +222,15 @@ if show_table:
     st.write("Forecast values")
     st.dataframe(forecast_df, use_container_width=True, hide_index=True)
 
-# Download forecast
-csv_data = forecast_df.to_csv(index=False).encode("utf-8")
-
 st.download_button(
-    label="Download Forecast CSV",
-    data=csv_data,
-    file_name="uac_forecast.csv",
-    mime="text/csv"
+    "Download forecast as CSV",
+    forecast_df.to_csv(index=False).encode("utf-8"),
+    "UAC_forecast_results.csv",
+    "text/csv"
 )
 
-st.divider()
-st.subheader("Interpretation and Limitations")
+with st.expander("View dataset preview"):
+    st.dataframe(df.tail(20), use_container_width=True)
 
-st.write(
-    "These forecasts are baseline statistical estimates based on historical "
-    "values. They do not account for sudden policy changes, border activity, "
-    "or other unexpected events. They should support exploratory planning, "
-    "not be treated as guaranteed future demand."
-)
-
-st.caption(
-    "Data source: HHS Unaccompanied Children Program dataset provided "
-    "for this project. Forecasts are not official HHS projections."
-)
+st.markdown("---")
+st.caption("Note: These are exploratory statistical forecasts based on historical patterns, not official HHS projections. Actual care load and placement demand may change due to policy, border activity, transfers, and other external factors.")
